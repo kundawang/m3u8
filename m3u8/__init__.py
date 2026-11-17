@@ -6,6 +6,15 @@ import os
 from urllib.parse import urljoin, urlsplit
 
 from m3u8.httpclient import DefaultHTTPClient
+from m3u8.llhls import (
+    DuplicateURIError,
+    IncompletePartError,
+    InvalidDurationError,
+    LiveWindowError,
+    LowLatencyWindow,
+    PublishOrderError,
+    WindowTooSmallError,
+)
 from m3u8.model import (
     M3U8,
     ContentSteering,
@@ -57,6 +66,13 @@ __all__ = (
     "ContentSteering",
     "ImagePlaylist",
     "Tiles",
+    "LowLatencyWindow",
+    "LiveWindowError",
+    "IncompletePartError",
+    "DuplicateURIError",
+    "InvalidDurationError",
+    "WindowTooSmallError",
+    "PublishOrderError",
     "loads",
     "load",
     "parse",
