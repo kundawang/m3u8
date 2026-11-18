@@ -1,0 +1,14 @@
+#EXTM3U
+#EXT-X-VERSION:6
+#EXT-X-TARGETDURATION:6
+#EXT-X-MEDIA-SEQUENCE:4008
+#EXTINF:6,
+audio_08.ts
+#EXTINF:6,
+audio_09.ts
+#EXTINF:6,
+audio_10.ts
+#EXTINF:6,
+audio_11.ts
+#EXTINF:6,
+audio_12.ts

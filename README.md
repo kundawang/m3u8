@@ -81,6 +81,57 @@ playlist.dump('playlist.m3u8')
 -   [\#EXT-X-GAP](https://tools.ietf.org/html/draft-pantos-hls-rfc8216bis-05#section-4.4.2.7)
 -   [\#EXT-X-CONTENT-STEERING](https://tools.ietf.org/html/draft-pantos-hls-rfc8216bis-10#section-4.4.6.64)
 
+# Aligning positions across playlists
+
+The same live program can be published as several media playlists (for
+example a video and an audio rendition) whose segments have different
+durations, are cut asynchronously and slide independently. `align_segment`
+finds the same program position in another playlist using
+`EXT-X-PROGRAM-DATE-TIME` anchors and `EXT-X-DISCONTINUITY` boundaries,
+extrapolating the program clock across segments that do not carry their own
+PDT:
+
+```python
+import m3u8
+from m3u8 import align_segment
+
+source = m3u8.load("http://example.com/video.m3u8")
+target = m3u8.load("http://example.com/audio.m3u8")
+
+# 4.5s into the second source segment
+result = align_segment(source, 1, target, offset=4.5)
+if result.status == "ok":
+    target_segment = result.target_segment      # m3u8.Segment
+    target_offset = result.offset               # seconds inside it
+    program_time = result.program_date_time     # absolute program clock
+    worst_case_error = result.error             # estimated error, seconds
+elif result.status == "gap":
+    ...  # position found, but the target segment carries EXT-X-GAP
+else:
+    ...  # result.reason explains why the position cannot be mapped
+```
+
+The source segment may be given as a zero based index or a `Segment` object
+(including one kept across a playlist reload, matched by media sequence).
+The result `status` is `ok`, `gap` or `error`, with a machine readable
+`reason` on failure:
+
+-   `no_common_anchor` — the playlists do not share a PDT anchor covering
+    the position (including a target window without any PDT),
+-   `clock_backwards` — a PDT tag moved backwards without a discontinuity,
+-   `cross_discontinuity` — the position falls into a discontinuity gap or
+    needs an unanchored segment on the other side of a discontinuity,
+-   `outside_window` — the position is older or newer than every segment of
+    the target sliding window,
+-   `offset_out_of_bounds` — the offset is not within the source segment,
+-   `segment_not_in_playlist` / `empty_playlist` — invalid input.
+
+`error` is a worst-case estimate in seconds: explicit PDT anchors are exact,
+while extrapolated positions accumulate the playlist target duration once
+per segment away from the nearest anchor, plus any clock drift measured
+between consecutive anchors. The per-segment assumption can be overridden
+with `extrapolation_bound`.
+
 # Frequently Asked Questions
 
 -   [FAQ](https://github.com/globocom/m3u8/wiki/FAQ)
