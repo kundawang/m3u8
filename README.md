@@ -39,6 +39,40 @@ print(playlist.dumps())
 playlist.dump('playlist.m3u8')
 ```
 
+## Tracking ad breaks in live playlists
+
+In live streams the `#EXT-X-DATERANGE` tags that signal an ad break
+typically arrive in two parts: an opening tag with `SCTE35-OUT` (or a
+`START-DATE`) followed, several playlist refreshes later, by a closing tag
+with `SCTE35-IN` (or an `END-DATE`/`DURATION`) sharing the same `ID`.
+
+`AdBreakTracker` consolidates those fragments into time-ordered `AdBreak`
+intervals and can be fed every downloaded playlist of the same stream. It
+deduplicates tags repeated in the sliding window and completes an open
+break when the late closing marker arrives:
+
+``` python
+import m3u8
+from m3u8 import AdBreakTracker
+
+tracker = AdBreakTracker()
+for playlist_content in live_playlist_updates:
+    playlist = m3u8.loads(playlist_content)
+    tracker.merge(playlist)
+
+for ad in tracker.breaks:          # sorted by start time
+    print(ad.id, ad.start_date, ad.end_date, ad.is_open)
+    print(ad.start_marker, ad.end_marker)  # raw DateRange tags
+
+tracker.breaks.open    # breaks without a closing marker yet
+tracker.breaks.closed  # completed breaks
+tracker.conflicts      # contradictory input (conflicting IDs, end before
+                       # start, overlapping breaks, missing clock anchor...)
+```
+
+A single playlist also exposes its consolidated breaks directly through
+the `M3U8.ad_breaks` property.
+
 # Supported tags
 
 -   [\#EXT-X-TARGETDURATION](https://tools.ietf.org/html/rfc8216#section-4.3.3.1)

@@ -283,6 +283,20 @@ class M3U8:
             base_uri=self.base_uri, **content_steering
         )
 
+    @property
+    def ad_breaks(self):
+        """
+        Consolidated, time-ordered ad intervals for this single playlist,
+        derived from its ``EXT-X-DATERANGE`` SCTE35/start-end tags.
+
+        For incremental consolidation across successive live playlists
+        (deduplication and late closing markers) use
+        :class:`m3u8.ad_tracking.AdBreakTracker` directly.
+        """
+        from m3u8.ad_tracking import AdBreakTracker
+
+        return AdBreakTracker().merge(self)
+
     def __unicode__(self):
         return self.dumps()
 
