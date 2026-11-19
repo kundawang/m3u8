@@ -1719,6 +1719,195 @@ def test_bitrate_settable_as_int():
     assert "#EXT-X-BITRATE:9876" in obj.dumps().strip()
 
 
+def test_segments_carry_tiles_information():
+    obj = m3u8.M3U8(playlists.VOD_IMAGE_PLAYLIST)
+
+    assert obj.segments[0].tiles is None
+
+    tiles = obj.segments[3].tiles
+    assert "640x360" == tiles.resolution
+    assert "5x2" == tiles.layout
+    assert 6.006 == tiles.duration
+
+
+def test_dump_image_playlist_preserves_tiles():
+    obj = m3u8.M3U8(playlists.VOD_IMAGE_PLAYLIST)
+
+    assert (
+        "#EXTINF:60.06,\n"
+        "#EXT-X-TILES:RESOLUTION=640x360,LAYOUT=5x2,DURATION=6.006\n"
+        "content-0.jpg"
+    ) in obj.dumps()
+
+
+def test_image_tile_at_locates_tiles_in_5x2_sprite_sheets():
+    obj = m3u8.M3U8(playlists.VOD_IMAGE_PLAYLIST, base_uri="http://example.com/")
+
+    preroll = 6.006 + 6.006 + 3.003  # 15.015, start of content-0.jpg
+
+    # exact segment boundary: first tile of content-0.jpg
+    tile = obj.image_tile_at(preroll)
+    assert "http://example.com/content-0.jpg" == tile.uri
+    assert (0, 0) == (tile.row, tile.column)
+    assert (0, 0, 128, 180) == tile.rect
+
+    # exact tile boundary belongs to the tile starting there
+    tile = obj.image_tile_at(preroll + 6.006)
+    assert (0, 1) == (tile.row, tile.column)
+    assert (128, 0, 128, 180) == tile.rect
+
+    # second row of the 5x2 grid
+    tile = obj.image_tile_at(preroll + 5 * 6.006)
+    assert (1, 0) == (tile.row, tile.column)
+    assert (0, 180, 128, 180) == tile.rect
+
+    # last cell of the grid
+    tile = obj.image_tile_at(preroll + 9 * 6.006)
+    assert (1, 4) == (tile.row, tile.column)
+    assert (512, 180, 128, 180) == tile.rect
+
+    # exact segment boundary: first tile of the next sprite sheet
+    tile = obj.image_tile_at(preroll + 60.06)
+    assert "http://example.com/content-1.jpg" == tile.uri
+    assert (0, 0) == (tile.row, tile.column)
+    assert (0, 0, 128, 180) == tile.rect
+
+
+def test_image_tile_at_handles_last_sprite_sheet_with_partial_grid():
+    obj = m3u8.M3U8(playlists.VOD_IMAGE_PLAYLIST, base_uri="http://example.com/")
+
+    # content-4.jpg lasts 54.054s = 9 tiles of 6.006s, not the full 10
+    start = 6.006 + 6.006 + 3.003 + 4 * 60.06
+
+    tile = obj.image_tile_at(start + 8 * 6.006)
+    assert "http://example.com/content-4.jpg" == tile.uri
+    assert (1, 3) == (tile.row, tile.column)
+    assert (384, 180, 128, 180) == tile.rect
+
+    # the ninth tile stays until the segment ends
+    tile = obj.image_tile_at(start + 54.053)
+    assert (1, 3) == (tile.row, tile.column)
+    assert (384, 180, 128, 180) == tile.rect
+
+
+def test_image_tile_at_locates_tiles_in_4x3_sprite_sheets():
+    obj = m3u8.M3U8(playlists.VOD_IMAGE_PLAYLIST2, base_uri="http://example.com/t/")
+
+    start = 6.006 + 6.006 + 3.003  # 15.015, start of movie_001.jpg
+
+    tile = obj.image_tile_at(start)
+    assert "http://example.com/t/movie_001.jpg" == tile.uri
+    assert (0, 0) == (tile.row, tile.column)
+    assert (0, 0, 160, 120) == tile.rect
+
+    tile = obj.image_tile_at(start + 2.002)
+    assert (0, 1) == (tile.row, tile.column)
+    assert (160, 0, 160, 120) == tile.rect
+
+    # second row of the 4x3 grid
+    tile = obj.image_tile_at(start + 4 * 2.002)
+    assert (1, 0) == (tile.row, tile.column)
+    assert (0, 120, 160, 120) == tile.rect
+
+    # last cell of the 4x3 grid
+    tile = obj.image_tile_at(start + 11 * 2.002)
+    assert (2, 3) == (tile.row, tile.column)
+    assert (480, 240, 160, 120) == tile.rect
+
+    # credits_2_1.jpg lasts 6.006s = 3 tiles of 2.002s, not the full 12
+    credits = start + 5 * 24.024
+    tile = obj.image_tile_at(credits + 2 * 2.002)
+    assert "http://example.com/t/credits_2_1.jpg" == tile.uri
+    assert (0, 2) == (tile.row, tile.column)
+    assert (320, 0, 160, 120) == tile.rect
+
+    tile = obj.image_tile_at(credits + 6.005)
+    assert (0, 2) == (tile.row, tile.column)
+
+
+def test_image_tile_at_without_tiles_information():
+    obj = m3u8.M3U8(playlists.VOD_IMAGE_PLAYLIST, base_uri="http://example.com/")
+
+    # preroll-ad-1.jpg is a plain image segment without EXT-X-TILES
+    with pytest.raises(ValueError, match="no EXT-X-TILES"):
+        obj.image_tile_at(3.0)
+
+
+def test_image_tile_at_out_of_range():
+    obj = m3u8.M3U8(playlists.VOD_IMAGE_PLAYLIST, base_uri="http://example.com/")
+
+    with pytest.raises(ValueError, match="non-negative"):
+        obj.image_tile_at(-1)
+
+    with pytest.raises(ValueError, match="beyond the playlist duration"):
+        obj.image_tile_at(504.504)
+
+    with pytest.raises(ValueError, match="beyond the playlist duration"):
+        obj.image_tile_at(1000)
+
+
+def _tiles_playlist(tiles_attributes):
+    return (
+        "#EXTM3U\n"
+        "#EXT-X-TARGETDURATION:10\n"
+        "#EXT-X-PLAYLIST-TYPE:VOD\n"
+        "#EXT-X-IMAGES-ONLY\n"
+        "#EXTINF:10.0,\n"
+        f"#EXT-X-TILES:{tiles_attributes}\n"
+        "sheet.jpg\n"
+        "#EXT-X-ENDLIST\n"
+    )
+
+
+def test_image_tile_at_with_invalid_layout():
+    for layout in ("5x0", "0x2", "5", "axb", "5x2x1"):
+        content = _tiles_playlist(f"RESOLUTION=640x360,LAYOUT={layout},DURATION=1.0")
+        obj = m3u8.M3U8(content, base_uri="http://example.com/")
+        with pytest.raises(ValueError, match="invalid LAYOUT"):
+            obj.image_tile_at(1.0)
+
+
+def test_image_tile_at_with_zero_tile_duration():
+    content = _tiles_playlist("RESOLUTION=640x360,LAYOUT=5x2,DURATION=0")
+    obj = m3u8.M3U8(content, base_uri="http://example.com/")
+
+    with pytest.raises(ValueError, match="greater than zero"):
+        obj.image_tile_at(1.0)
+
+
+def test_image_tile_at_with_resolution_not_divisible_by_layout():
+    content = _tiles_playlist("RESOLUTION=641x360,LAYOUT=5x2,DURATION=1.0")
+    obj = m3u8.M3U8(content, base_uri="http://example.com/")
+
+    with pytest.raises(ValueError, match="not evenly divisible"):
+        obj.image_tile_at(1.0)
+
+    content = _tiles_playlist("RESOLUTION=640x361,LAYOUT=5x2,DURATION=1.0")
+    obj = m3u8.M3U8(content, base_uri="http://example.com/")
+
+    with pytest.raises(ValueError, match="not evenly divisible"):
+        obj.image_tile_at(1.0)
+
+
+def test_image_tile_at_with_bad_uri():
+    # segment without URI
+    obj = m3u8.M3U8()
+    obj.add_segment(
+        Segment(
+            duration=10,
+            tiles={"resolution": "640x360", "layout": "5x2", "duration": 1.0},
+        )
+    )
+    with pytest.raises(ValueError, match="no URI"):
+        obj.image_tile_at(1.0)
+
+    # relative URI without a base_uri to resolve it against
+    content = _tiles_playlist("RESOLUTION=640x360,LAYOUT=5x2,DURATION=1.0")
+    obj = m3u8.M3U8(content)
+    with pytest.raises(ValueError, match="absolute_uri"):
+        obj.image_tile_at(1.0)
+
+
 # custom asserts
 
 

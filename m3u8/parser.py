@@ -413,6 +413,11 @@ def _parse_tiles(line, data, state, **kwargs):
     attribute_parser["duration"] = float
     tiles_info = _parse_attribute_list(protocol.ext_x_tiles, line, attribute_parser)
     data["tiles"].append(tiles_info)
+    # EXT-X-TILES applies to the segment being built (it appears between
+    # EXTINF and the segment URI), so attach it to that segment as well.
+    if "segment" not in state:
+        state["segment"] = {}
+    state["segment"]["tiles"] = tiles_info
 
 
 def _parse_media(line, data, **kwargs):

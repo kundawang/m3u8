@@ -353,6 +353,40 @@ class M3U8:
             self.is_variant = True
             self.image_playlists.append(image_playlist)
 
+    def image_tile_at(self, time_position):
+        """
+        Locates the thumbnail for `time_position` seconds into this image
+        media playlist (one referenced by an ImagePlaylist).
+
+        Segments are accumulated in playlist order; the segment containing
+        `time_position` must carry EXT-X-TILES information, from which the
+        tile row/column in the grid and its pixel crop rectangle are
+        computed. A time exactly on a segment or tile boundary belongs to
+        the segment/tile starting at that boundary.
+
+        Returns a TileLocation with the absolute image URI, the zero-based
+        tile row/column and the (x, y, width, height) crop rectangle.
+
+        Raises ValueError if `time_position` is negative or beyond the
+        playlist duration, if the segment has no EXT-X-TILES tag, or if
+        the tag has an invalid LAYOUT, RESOLUTION or DURATION.
+        """
+        if time_position is None or not (time_position >= 0):
+            raise ValueError(
+                f"time_position must be a non-negative number, got {time_position!r}"
+            )
+
+        elapsed = 0.0
+        for segment in self.segments:
+            end = elapsed + (segment.duration or 0.0)
+            if time_position < end:
+                return _tile_location_in_segment(segment, time_position - elapsed)
+            elapsed = end
+
+        raise ValueError(
+            f"time_position {time_position} is beyond the playlist duration {elapsed}"
+        )
+
     def add_media(self, media):
         self.media.append(media)
 
@@ -518,6 +552,10 @@ class Segment(BasePathMixin):
     `gap_tag`
       GAP tag indicates that a Media Segment is missing
 
+    `tiles`
+      Tiles object with the EXT-X-TILES information, when the segment is
+      an image archive (sprite sheet) of an image media playlist
+
     `custom_parser_values`
         Additional values which custom_tags_parser might store per segment
     """
@@ -548,6 +586,7 @@ class Segment(BasePathMixin):
         init_section=None,
         dateranges=None,
         gap_tag=None,
+        tiles=None,
         media_sequence=None,
         custom_parser_values=None,
     ):
@@ -584,6 +623,7 @@ class Segment(BasePathMixin):
             [DateRange(**daterange) for daterange in dateranges] if dateranges else []
         )
         self.gap_tag = gap_tag
+        self.tiles = Tiles(**tiles) if tiles else None
         self.custom_parser_values = custom_parser_values or {}
 
     def add_part(self, part):
@@ -665,6 +705,10 @@ class Segment(BasePathMixin):
                 output.append("#EXTINF:%s," % duration)
                 if self.title:
                     output.append(self.title)
+                output.append("\n")
+
+            if self.tiles:
+                output.append(str(self.tiles))
                 output.append("\n")
 
             if self.byterange:
@@ -1620,12 +1664,135 @@ class Tiles(BasePathMixin):
         tiles = []
         tiles.append("RESOLUTION=" + self.resolution)
         tiles.append("LAYOUT=" + self.layout)
-        tiles.append("DURATION=" + self.duration)
+        tiles.append("DURATION=" + number_to_string(self.duration))
 
         return "#EXT-X-TILES:" + ",".join(tiles)
 
     def __str__(self):
         return self.dumps()
+
+
+class TileLocation:
+    """
+    The location of the thumbnail for a given playback time inside an
+    image media playlist segment that carries EXT-X-TILES information.
+
+    `uri`
+      absolute URI of the image (sprite sheet) containing the tile
+
+    `row` / `column`
+      zero-based position of the tile in the grid layout
+
+    `x`, `y`, `width`, `height`
+      pixel crop rectangle of the tile inside the image
+    """
+
+    __slots__ = ("column", "height", "row", "uri", "width", "x", "y")
+
+    def __init__(self, uri, row, column, x, y, width, height):
+        self.uri = uri
+        self.row = row
+        self.column = column
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+
+    @property
+    def rect(self):
+        """Crop rectangle as a (x, y, width, height) tuple."""
+        return (self.x, self.y, self.width, self.height)
+
+    def __eq__(self, other):
+        if not isinstance(other, TileLocation):
+            return NotImplemented
+        return (
+            self.uri,
+            self.row,
+            self.column,
+            self.rect,
+        ) == (other.uri, other.row, other.column, other.rect)
+
+    def __repr__(self):
+        return (
+            "TileLocation(uri=%r, row=%r, column=%r, x=%r, y=%r, "
+            "width=%r, height=%r)"
+            % (
+                self.uri,
+                self.row,
+                self.column,
+                self.x,
+                self.y,
+                self.width,
+                self.height,
+            )
+        )
+
+
+def _parse_grid_pair(value, name):
+    """Parses a `<integer>x<integer>` attribute into a pair of positive ints."""
+    parts = str(value).lower().split("x")
+    if len(parts) != 2:
+        raise ValueError(f"invalid {name} {value!r}: expected '<width>x<height>'")
+    try:
+        pair = (int(parts[0]), int(parts[1]))
+    except ValueError:
+        raise ValueError(
+            f"invalid {name} {value!r}: dimensions must be integers"
+        ) from None
+    if pair[0] <= 0 or pair[1] <= 0:
+        raise ValueError(f"invalid {name} {value!r}: dimensions must be positive")
+    return pair
+
+
+def _tile_location_in_segment(segment, offset):
+    """
+    Computes the TileLocation for `offset` seconds into `segment`, which
+    must carry EXT-X-TILES information.
+    """
+    tiles = segment.tiles
+    if tiles is None:
+        raise ValueError(f"segment {segment.uri!r} has no EXT-X-TILES information")
+
+    if not segment.uri:
+        raise ValueError("cannot locate tile: segment has no URI")
+    uri = segment.absolute_uri
+
+    columns, rows = _parse_grid_pair(tiles.layout, "LAYOUT")
+    resolution_width, resolution_height = _parse_grid_pair(
+        tiles.resolution, "RESOLUTION"
+    )
+
+    if resolution_width % columns or resolution_height % rows:
+        raise ValueError(
+            f"RESOLUTION {tiles.resolution!r} is not evenly divisible by "
+            f"LAYOUT {tiles.layout!r}"
+        )
+    tile_width = resolution_width // columns
+    tile_height = resolution_height // rows
+
+    tile_duration = float(tiles.duration)
+    if tile_duration <= 0:
+        raise ValueError(
+            f"EXT-X-TILES DURATION must be greater than zero, got {tiles.duration!r}"
+        )
+
+    # A time exactly on a tile boundary belongs to the tile that starts
+    # there; the epsilon only absorbs float representation error.
+    index = int(offset / tile_duration + 1e-9)
+    # If the EXTINF outlasts the grid, the last tile stays on screen.
+    index = min(index, columns * rows - 1)
+
+    row, column = divmod(index, columns)
+    return TileLocation(
+        uri=uri,
+        row=row,
+        column=column,
+        x=column * tile_width,
+        y=row * tile_height,
+        width=tile_width,
+        height=tile_height,
+    )
 
 
 def find_key(keydata, keylist):
